@@ -1,15 +1,22 @@
 from fastapi import FastAPI
 from pydantic import BaseModel, Field, validator
-from typing import Set
+from typing import Set, List, Optional
 import networkx as nx
 from networkx.readwrite import json_graph
 
 app = FastAPI()
 
+class EdgeAttr(BaseModel):
+    bandwidth: str = "400Gbps"
+    delay: str = "0.0005ms"
+    error_rate: str = "0"
+
 class TopologyRequest(BaseModel):
     num_nodes: int = Field(..., gt=2, description="Total number of nodes in the topology (must be greater than 2)")
-    # Renamed skips to permutations. Constraint >= 0
     permutations: Set[int] = Field(..., description="Set of unique permutation values (each >= 0). p=0 connects to next node, p=1 skips 1 node.")
+    bandwidth: Optional[str] = Field("400Gbps", description="Bandwidth for each link.")
+    delay: Optional[str] = Field("0.0005ms", description="Delay for each link.")
+    error_rate: Optional[str] = Field("0", description="Error rate for each link.")
 
     @validator('permutations')
     def check_permutations_non_negative(cls, v):
@@ -21,6 +28,7 @@ class TopologyResponse(BaseModel):
     graph_json: dict # Node-link data
     config: TopologyRequest # The configuration used
     topology_type: str = "ring" # Added topology type field
+    edge_list: List[List] # For export: [source, target, bandwidth, delay, error_rate]
 
 @app.get("/")
 def read_root():
@@ -33,32 +41,37 @@ def generate_topology(request: TopologyRequest):
     and a list of unique permutation values.
     Permutation 'p' connects node 'i' to node '(i + p + 1) % n'.
     """
-    G = nx.Graph()
+    G = nx.DiGraph()
     n = request.num_nodes
 
     # Add all necessary nodes first
     G.add_nodes_from(range(n))
 
-    # Add edges for each permutation configuration
-    # Use 'p' for permutation value, consistent with user definition
+    edge_list = []
     for p in request.permutations:
-        # Add edges for the ring with permutation p
         for i in range(n):
-            # Permutation p=0 -> target=(i+1)%n
-            # Permutation p=1 -> target=(i+2)%n
             source_node = i
             target_node = (i + p + 1) % n
-            # Avoid self-loops (important for n=1 or p+1=multiple of n)
-            # Condition num_nodes > 2 already prevents n=1, n=2 edge cases mostly.
-            # Example n=3, p=2 -> target=(i+3)%3=i -> self-loop. Prevent this.
             if source_node != target_node:
-                 G.add_edge(source_node, target_node)
+                G.add_edge(
+                    source_node, target_node,
+                    bandwidth=request.bandwidth,
+                    delay=request.delay,
+                    error_rate=request.error_rate
+                )
+                edge_list.append([
+                    source_node, target_node,
+                    request.bandwidth, request.delay, request.error_rate
+                ])
 
-    # Serialize graph to JSON node-link format
     graph_data = json_graph.node_link_data(G)
 
-    # Include the topology type in the response
-    return TopologyResponse(graph_json=graph_data, config=request, topology_type="ring")
+    return TopologyResponse(
+        graph_json=graph_data,
+        config=request,
+        topology_type="ring",
+        edge_list=edge_list
+    )
 
 # Example of how to run the app (optional, for local testing)
 # if __name__ == "__main__":

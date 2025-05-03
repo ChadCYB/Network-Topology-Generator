@@ -5,7 +5,7 @@ from networkx.readwrite import json_graph
 import matplotlib.pyplot as plt
 import json
 import io
-import os # Added for path manipulation
+import os  # Added for path manipulation
 
 # --- Configuration ---
 BACKEND_URL = "http://127.0.0.1:8000/generate_topology"
@@ -20,9 +20,7 @@ def draw_graph(graph_data):
         return None
     try:
         G = json_graph.node_link_graph(graph_data)
-        # Use the slider value for figure size directly here if passed
-        # Default figure size set via slider default value later
-        fig, ax = plt.subplots() # Size will be set before display
+        fig, ax = plt.subplots()
         try:
             pos = nx.kamada_kawai_layout(G)
         except nx.NetworkXError:
@@ -30,8 +28,11 @@ def draw_graph(graph_data):
         except ImportError:
             st.warning("Kamada-Kawai layout requires SciPy. Using Spring layout.")
             pos = nx.spring_layout(G, seed=42)
-
-        nx.draw(G, pos, ax=ax, with_labels=True, node_color='lightblue', node_size=500, edge_color='gray', font_size=10)
+        # Draw nodes and labels
+        nx.draw_networkx_nodes(G, pos, ax=ax, node_color='lightblue', node_size=500)
+        nx.draw_networkx_labels(G, pos, ax=ax, font_size=10)
+        # Draw directed edges with arrows
+        nx.draw_networkx_edges(G, pos, ax=ax, edge_color='gray', arrows=True, arrowstyle='-|>', arrowsize=20)
         ax.set_title("Generated Network Topology")
         ax.set_xticks([])
         ax.set_yticks([])
@@ -49,27 +50,28 @@ def generate_and_update_topology():
 
     payload = {
         "num_nodes": st.session_state.num_nodes,
-        "permutations": list(st.session_state.permutation_configs)
+        "permutations": list(st.session_state.permutation_configs),
+        "bandwidth": st.session_state.bandwidth,
+        "delay": st.session_state.delay,
+        "error_rate": st.session_state.error_rate
     }
     try:
         response = requests.post(BACKEND_URL, json=payload)
         response.raise_for_status()
         data = response.json()
-        # Store the graph and the full response data separately
         st.session_state.generated_topology = data.get("graph_json")
-        # Store the whole response dict to include topology_type later
         st.session_state.last_topology_response = data
         st.success("Topology generated successfully!")
         return True
     except requests.exceptions.RequestException as e:
         st.error(f"Error connecting to backend: {e}")
         st.session_state.generated_topology = None
-        st.session_state.last_topology_response = None # Clear response on error
+        st.session_state.last_topology_response = None
         return False
     except Exception as e:
         st.error(f"An error occurred during generation: {e}")
         st.session_state.generated_topology = None
-        st.session_state.last_topology_response = None # Clear response on error
+        st.session_state.last_topology_response = None
         return False
 
 # --- Initialize Session State ---
@@ -108,7 +110,7 @@ with col1:
     if st.session_state.num_nodes is None:
         with st.form("node_config_form"):
             st.subheader("Step 1: Set Number of Nodes")
-            num_nodes_input = st.number_input("Number of Nodes", min_value=3, value=5, step=1,
+            num_nodes_input = st.number_input("Number of Nodes", min_value=3, value=8, step=1,
                                               help="Set the total number of nodes for the topology. This cannot be changed later without resetting.")
             submitted_nodes = st.form_submit_button("Set Nodes")
             if submitted_nodes:
@@ -119,15 +121,22 @@ with col1:
         st.subheader(f"Step 1: Number of Nodes: {st.session_state.num_nodes}")
         st.caption("To change the number of nodes, reset the configuration.")
 
-        # 2. Add Permutations
-        st.subheader("Step 2: Add Permutations")
-        # Calculate maximum permutation value based on number of nodes
-        # For n nodes, we only need permutations from 0 to (n/2 - 1)
-        # because p and (n-p-2) create the same graph
-        max_perm_value = (st.session_state.num_nodes // 2) - 1
-        
+        # 2. Add Bandwidth, Delay, Error Rate
+        st.subheader("Step 2: Link Attributes")
+        if 'bandwidth' not in st.session_state:
+            st.session_state.bandwidth = "400Gbps"
+        if 'delay' not in st.session_state:
+            st.session_state.delay = "0.0005ms"
+        if 'error_rate' not in st.session_state:
+            st.session_state.error_rate = "0"
+        st.session_state.bandwidth = st.text_input("Bandwidth(Gbps)", value=st.session_state.bandwidth, help="e.g. 400Gbps")
+        st.session_state.delay = st.text_input("Delay(ms)", value=st.session_state.delay, help="e.g. 0.0005ms")
+        st.session_state.error_rate = st.text_input("Error Rate", value=st.session_state.error_rate, help="e.g. 0")
+
+        # 3. Add Permutations
+        st.subheader("Step 3: Add Permutations")
+        max_perm_value = st.session_state.num_nodes - 2
         with st.form("add_permutation_form", clear_on_submit=True):
-            # Add permutation input with dynamic max value
             st.number_input(
                 "Permutation Value",
                 min_value=0,
@@ -141,7 +150,7 @@ with col1:
                 if st.session_state.permutation not in st.session_state.permutation_configs:
                     st.session_state.permutation_configs.add(st.session_state.permutation)
                     st.success(f"Added permutation: {st.session_state.permutation}")
-                    if generate_and_update_topology(): # This function now updates last_topology_response
+                    if generate_and_update_topology():
                         st.rerun()
                 else:
                     st.warning(f"Permutation {st.session_state.permutation} already exists.")
@@ -186,59 +195,69 @@ with col1:
 
 with col2:
     st.header("Topology Visualization")
-    # Set default slider value to 6
     fig_size = st.slider("Adjust Plot Size", min_value=4, max_value=20, value=6, step=1)
     fig = draw_graph(st.session_state.generated_topology)
     if fig:
         fig.set_size_inches(fig_size, fig_size)
-        # Add use_container_width=True
         st.pyplot(fig, use_container_width=True)
-    # Use last_topology_response to check if generation was attempted
     elif st.session_state.last_topology_response:
          st.warning("Could not display topology. Check configuration or backend connection.")
     else:
         st.info("Configure nodes and permutations to visualize the topology.")
 
     # --- Export Configuration ---
-    # Use last_topology_response here
     if st.session_state.last_topology_response:
          st.subheader("Export Configuration")
          try:
-            # Prepare the JSON data for export, including topology_type
-             export_data = st.session_state.last_topology_response.get("config", {})
-             export_data["topology_type"] = st.session_state.last_topology_response.get("topology_type", "unknown")
+            export_data = st.session_state.last_topology_response.get("config", {})
+            export_data["topology_type"] = st.session_state.last_topology_response.get("topology_type", "unknown")
+            
+            # Custom Topology Format Export
+            resp = st.session_state.last_topology_response
+            n = resp['config']['num_nodes']
+            switch_count = 0  # For ring, switch node is 0
+            link_count = len(resp['edge_list'])
+            lines = [f"{n} {switch_count} {link_count}"]
+            # Switch line (empty line, as switch is 0)
+            lines.append('')
+            for edge in resp['edge_list']:
+                # edge: [src, dst, bandwidth, delay, error_rate]
+                lines.append(f"{edge[0]} {edge[1]} {edge[2]} {edge[3]} {edge[4]}")
+            export_txt = '\n'.join(lines)
 
-             config_json = json.dumps(export_data, indent=2)
-             json_bytes = config_json.encode('utf-8')
+            # Text Area with custom format (no units)
+            st.text_area("Configuration (Custom Topology Format)", value=export_txt, height=200,
+                         help="The custom topology format used for the last successful generation.")
 
-             # Display topology type from the prepared data
-             st.markdown(f"**Topology Type:** {export_data['topology_type']}")
-
-             st.text_area("Configuration JSON", value=config_json, height=150,
-                          help="The JSON configuration used for the last successful generation.")
-
-             # Add columns for buttons
-             btn_col1, btn_col2 = st.columns(2)
-
-             with btn_col1:
-                 st.download_button(
-                     label="Download Configuration (JSON)",
-                     data=json_bytes,
-                     file_name="config.json", # Changed filename for consistency
-                     mime="application/json",
-                 )
-
-             with btn_col2:
-                 if st.button("Export config.json to Project Root"):
-                     export_path = os.path.join(PROJECT_ROOT, "config.json")
-                     try:
-                         with open(export_path, "w", encoding='utf-8') as f:
-                             f.write(config_json)
-                         st.success(f"Configuration exported to: {export_path}")
-                     except PermissionError:
-                         st.error(f"Permission denied: Cannot write to {export_path}. Check script permissions.")
-                     except Exception as e:
-                         st.error(f"Failed to export configuration file: {e}")
-
+            btn_col1, btn_col2, btn_col3 = st.columns(3)
+            
+            # Button Order: Download Configuration, Export to Project Root, Download Configuration (JSON)
+            with btn_col1:
+                st.download_button(
+                    label="Download Configuration",
+                    data=export_txt,
+                    file_name="topology.txt",
+                    mime="text/plain",
+                )
+            with btn_col2:
+                if st.button("Export to Project Root"):
+                    export_path = os.path.join(PROJECT_ROOT, "topology.txt")
+                    try:
+                        with open(export_path, "w", encoding='utf-8') as f:
+                            f.write(export_txt)
+                        st.success(f"Configuration exported to: {export_path}")
+                    except PermissionError:
+                        st.error(f"Permission denied: Cannot write to {export_path}. Check script permissions.")
+                    except Exception as e:
+                        st.error(f"Failed to export configuration file: {e}")
+            with btn_col3:
+                config_json = json.dumps(export_data, indent=2)
+                json_bytes = config_json.encode('utf-8')
+                st.download_button(
+                    label="Download Configuration (JSON)",
+                    data=json_bytes,
+                    file_name="config.json",
+                    mime="application/json",
+                )
          except Exception as e:
-             st.error(f"Error preparing/displaying JSON: {e}") 
+             st.error(f"Error preparing/displaying configuration: {e}")
